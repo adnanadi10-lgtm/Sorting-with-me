@@ -153,7 +153,7 @@ static const int KNOWN_STABLE[NUM_ALGORITHMS] = {
 };
 
 /* Variant label */
-static const char *VARIANT[NUM_ALGORITHMS] = {
+static const char *ALGO_VARIANT[NUM_ALGORITHMS] = {
     "iterative","recursive",
     "recursive","iterative",
     "iterative",
@@ -302,35 +302,56 @@ static double file_mb(const char *p){FILE*f=fopen(p,"rb");if(!f)return 0;fseek(f
       All use CMP() and SWAP() macros to count operations.
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Quick Sort — Lomuto partition (safe, counts ops) ───────────────────── */
+/* ── Quick Sort — 3-way partition (Dutch National Flag) ─────────────────── */
 /*
- * Median-of-three pivot selection, then Lomuto partition.
- * Safe for all subarray sizes >= 1.
+ * Uses median-of-three pivot + 3-way partitioning.
+ * Splits [lo..hi] into three regions:
+ *   [lo .. lt-1]  < pivot
+ *   [lt .. gt]   == pivot   <- entire region skipped in next recursion
+ *   [gt+1 .. hi]  > pivot
+ *
+ * This makes all-identical and heavy-duplicate inputs run in O(n) instead
+ * of O(n^2), completely eliminating the stack-overflow crash.
+ * Returns (lt, gt) via output pointers.
  */
-static int _qs_part(int *arr, int lo, int hi) {
-    /* Pick median-of-three pivot and place it at hi */
+static void _qs_3way(int *arr, int lo, int hi, int *out_lt, int *out_gt) {
+    /* Median-of-three: sort arr[lo], arr[mid], arr[hi] */
     int mid = lo + (hi - lo) / 2;
-    /* Sort lo, mid, hi so median ends at hi */
     if (CMP(arr[mid], arr[lo]))  SWAP(arr[mid], arr[lo]);
     if (CMP(arr[hi],  arr[lo]))  SWAP(arr[hi],  arr[lo]);
     if (CMP(arr[mid], arr[hi]))  SWAP(arr[mid], arr[hi]);
-    /* arr[hi] is now the median — use as pivot */
+    /* arr[hi] is now the median pivot */
     int pivot = arr[hi];
-    int i = lo - 1;
-    for (int j = lo; j < hi; j++) {
+
+    int lt = lo;   /* arr[lo..lt-1]  < pivot */
+    int gt = hi;   /* arr[gt+1..hi]  > pivot */
+    int i  = lo;   /* arr[lt..i-1]  == pivot */
+
+    while (i <= gt) {
         g_comparisons++;
-        if (arr[j] <= pivot) {
-            i++;
-            SWAP(arr[i], arr[j]);
+        if (arr[i] < pivot) {
+            SWAP(arr[lt], arr[i]);
+            lt++; i++;
+        } else {
+            g_comparisons++;
+            if (arr[i] > pivot) {
+                SWAP(arr[i], arr[gt]);
+                gt--;
+                /* don't advance i — need to re-examine swapped element */
+            } else {
+                i++;  /* arr[i] == pivot */
+            }
         }
     }
-    SWAP(arr[i+1], arr[hi]);
-    return i + 1;
+    *out_lt = lt;
+    *out_gt = gt;
 }
 
-/* Iterative Quick Sort */
+/* Iterative Quick Sort using 3-way partition */
 static void quick_sort_iter(int *arr, int n) {
     if (n <= 1) return;
+    /* Stack stores (lo, hi) pairs — 3-way skips equal region so
+       worst-case stack depth is O(log n) even for all-identical input */
     int *stk = (int*)malloc(2 * n * sizeof(int));
     int top = -1;
     stk[++top] = 0;
@@ -339,20 +360,23 @@ static void quick_sort_iter(int *arr, int n) {
         int hi = stk[top--];
         int lo = stk[top--];
         if (lo < hi) {
-            int p = _qs_part(arr, lo, hi);
-            stk[++top] = lo;   stk[++top] = p - 1;
-            stk[++top] = p + 1; stk[++top] = hi;
+            int lt, gt;
+            _qs_3way(arr, lo, hi, &lt, &gt);
+            /* Only recurse on < and > regions; == region is already sorted */
+            if (lo < lt - 1) { stk[++top] = lo;    stk[++top] = lt - 1; }
+            if (gt + 1 < hi) { stk[++top] = gt + 1; stk[++top] = hi;    }
         }
     }
     free(stk);
 }
 
-/* Recursive Quick Sort */
+/* Recursive Quick Sort using 3-way partition */
 static void _quick_rec(int *arr, int lo, int hi) {
     if (lo >= hi) return;
-    int p = _qs_part(arr, lo, hi);
-    _quick_rec(arr, lo, p - 1);
-    _quick_rec(arr, p + 1, hi);
+    int lt, gt;
+    _qs_3way(arr, lo, hi, &lt, &gt);
+    _quick_rec(arr, lo, lt - 1);
+    _quick_rec(arr, gt + 1, hi);
 }
 static void quick_sort_rec(int *arr, int n) {
     if (n <= 1) return;
@@ -894,7 +918,7 @@ int main(void) {
                             "%s,%s,"          /* stable_v, known_stable */
                             "%s,%s,%s,%s,"    /* complexity */
                             "%s\n",
-                            DIST_NAMES[di], ALGO_NAMES[ai], VARIANT[ai],
+                            DIST_NAMES[di], ALGO_NAMES[ai], ALGO_VARIANT[ai],
                             SIZE_LABELS[si], SIZES[si], CONDITIONS[ci],
                             r->runs,
                             stable_v,
@@ -910,7 +934,7 @@ int main(void) {
                             "%s,%s,"
                             "%s,%s,%s,%s,"
                             "%s\n",
-                            DIST_NAMES[di], ALGO_NAMES[ai], VARIANT[ai],
+                            DIST_NAMES[di], ALGO_NAMES[ai], ALGO_VARIANT[ai],
                             SIZE_LABELS[si], SIZES[si], CONDITIONS[ci],
                             r->runs,
                             r->time_min, r->time_avg, r->time_max,
