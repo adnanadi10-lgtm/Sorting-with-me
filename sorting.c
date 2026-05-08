@@ -101,6 +101,9 @@ static const char *DIST_NAMES[] = {
 #define SKIP_SLOW_FOR_LARGE   1
 #define NEARLY_SORTED_FRAC    0.05
 
+/* Maximum seconds allowed per single sort run — stops and marks TIMEOUT */
+#define TIMEOUT_SECONDS       180.0
+
 /* Algorithm indices */
 #define IDX_QUICK_ITER    0
 #define IDX_QUICK_REC     1
@@ -652,8 +655,9 @@ typedef struct {
     uint64_t swaps;
     int      stable;      /* -1=not checked, 0=unstable, 1=stable */
     int      skipped;
+    int      timed_out;   /* 1 if run exceeded TIMEOUT_SECONDS */
     int      error;
-    int      runs;        /* how many repetitions were averaged */
+    int      runs;
 } BenchResult;
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -682,6 +686,20 @@ static BenchResult run_benchmark(SortFn fn, const int *src, int n) {
         fn(arr, n);
         double elapsed = get_time_sec() - t0;
         double mem_after = get_memory_mb();
+
+        /* ── TIMEOUT CHECK ── */
+        if (elapsed > TIMEOUT_SECONDS) {
+            r.timed_out  = 1;
+            r.time_min   = elapsed;
+            r.time_avg   = elapsed;
+            r.time_max   = elapsed;
+            r.comparisons= g_comparisons;
+            r.swaps      = g_swaps;
+            r.mem_mb     = (mem_after > 0 ? mem_after : mem_before);
+            r.runs       = rep + 1;
+            free(arr);
+            return r;
+        }
 
         t_sum += elapsed;
         if (elapsed < t_min) t_min = elapsed;
@@ -840,12 +858,18 @@ int main(void) {
                     if (r.error) {
                         printf("  %-22s %9s %9s %10s %10s  -   ERROR\n",
                                ALGO_NAMES[ai],"-","-","-","-");
+                    } else if (r.timed_out) {
+                        char cmp_s[24], sw_s[24];
+                        fmt_count(cmp_s, r.comparisons);
+                        fmt_count(sw_s,  r.swaps);
+                        printf("  %-22s %9.1f %9.2f %10s %10s  -   TIMEOUT (>%.0fs)\n",
+                               ALGO_NAMES[ai], r.time_avg, r.mem_mb,
+                               cmp_s, sw_s, TIMEOUT_SECONDS);
                     } else {
                         char cmp_s[24], sw_s[24];
                         fmt_count(cmp_s, r.comparisons);
                         fmt_count(sw_s,  r.swaps);
                         const char *st_str = (r.stable==1)?"Y":(r.stable==0)?"N":"-";
-                        /* Show avg time; for small sizes also show min */
                         if (is_small)
                             printf("  %-22s %9.6f %9.2f %10s %10s  %-3s avg(min=%.6f)\n",
                                    ALGO_NAMES[ai],r.time_avg,r.mem_mb,
@@ -902,8 +926,9 @@ int main(void) {
                     BenchResult *r = &results[di][ai][si][ci];
 
                     const char *status =
-                        r->skipped ? "SKIPPED" :
-                        r->error   ? "ERROR"   : "OK";
+                        r->skipped    ? "SKIPPED" :
+                        r->timed_out  ? "TIMEOUT" :
+                        r->error      ? "ERROR"   : "OK";
 
                     const char *stable_v =
                         (r->stable== 1) ? "stable"   :
